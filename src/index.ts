@@ -1,5 +1,15 @@
-import { Client, GatewayIntentBits, Message } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Message,
+  SlashCommandBuilder,
+  ChatInputCommandInteraction,
+  AttachmentBuilder,
+  MessageFlags,
+} from 'discord.js';
 import { Client as PgClient } from 'pg';
+import { stringify } from 'csv-stringify';
+import { writeFileSync } from 'fs';
 
 const db = new PgClient({
   connectionString: process.env.DATABASE_URL,
@@ -33,6 +43,17 @@ const client = new Client({
   ],
 });
 
+const commands = [
+  new SlashCommandBuilder()
+    .setName('brewbot')
+    .setDescription('BrewBot commands')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('report')
+        .setDescription('Generate a CSV report of coffee chat statistics')
+    ),
+];
+
 const upsertDiscordUser = async (
   userId: string,
   displayName: string,
@@ -62,15 +83,38 @@ const insertCoffeeChat = async (
 ) => {
   const exists = await checkCoffeeChatExists(participant1, participant2);
   if (exists) {
-    console.log(`Coffee chat already exists between users ${participant1} and ${participant2}, skipping duplicate`);
+    console.log(
+      `Coffee chat already exists between users ${participant1} and ${participant2}, skipping duplicate`
+    );
     return false;
   }
-  
+
   await db.query(
     'INSERT INTO coffee_chats (participant_1_user_id, participant_2_user_id, discord_message_id) VALUES ($1, $2, $3)',
     [participant1, participant2, messageId]
   );
   return true;
+};
+
+const getCoffeeChatStats = async () => {
+  const query = `
+    SELECT 
+      u.user_id,
+      u.username,
+      u.display_name,
+      COUNT(*) as chat_count
+    FROM discord_users u
+    JOIN (
+      SELECT participant_1_user_id as user_id FROM coffee_chats
+      UNION ALL
+      SELECT participant_2_user_id as user_id FROM coffee_chats
+    ) c ON u.user_id = c.user_id
+    GROUP BY u.user_id, u.username, u.display_name
+    ORDER BY chat_count DESC, u.username ASC
+  `;
+
+  const result = await db.query(query);
+  return result.rows;
 };
 
 function parseMessage(message: Message): { mentionedUserId: string } | null {
@@ -94,8 +138,73 @@ function parseMessage(message: Message): { mentionedUserId: string } | null {
   return { mentionedUserId };
 }
 
-client.on('ready', () => {
+client.on('ready', async () => {
   console.log(`Logged in as ${client.user?.tag}!`);
+
+  try {
+    console.log('Started refreshing application (/) commands.');
+
+    await client.application?.commands.set(commands);
+
+    console.log('Successfully reloaded application (/) commands.');
+  } catch (error) {
+    console.error('Error refreshing commands:', error);
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'brewbot') {
+    if (interaction.options.getSubcommand() === 'report') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      try {
+        const stats = await getCoffeeChatStats();
+
+        if (stats.length === 0) {
+          await interaction.editReply('No coffee chats found in the database.');
+          return;
+        }
+
+        const csvData = [
+          ['Username', 'Display name', '# coffee chats', 'User ID'],
+          ...stats.map((row) => [
+            row.username,
+            row.display_name,
+            row.chat_count,
+            row.user_id,
+          ]),
+        ];
+
+        const csvString = await new Promise<string>((resolve, reject) => {
+          stringify(csvData, (err, output) => {
+            if (err) reject(err);
+            else resolve(output);
+          });
+        });
+
+        writeFileSync('/tmp/coffee_chats_report.csv', csvString);
+
+        const attachment = new AttachmentBuilder(
+          '/tmp/coffee_chats_report.csv',
+          {
+            name: 'coffee_chats_report.csv',
+          }
+        );
+
+        await interaction.editReply({
+          content: `Generated report with ${stats.length} users who have participated in coffee chats.`,
+          files: [attachment],
+        });
+      } catch (error) {
+        console.error('Error generating report:', error);
+        await interaction.editReply(
+          'Error generating report. Please try again.'
+        );
+      }
+    }
+  }
 });
 
 client.on('messageCreate', async (message: Message) => {
