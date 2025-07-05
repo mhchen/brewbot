@@ -157,6 +157,15 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.commandName === 'brewbot') {
     if (interaction.options.getSubcommand() === 'report') {
+      const member = interaction.member;
+      if (!member || !member.roles.cache.has(process.env.MODS_ROLE_ID!)) {
+        await interaction.reply({ 
+          content: 'You do not have permission to generate reports.', 
+          flags: MessageFlags.Ephemeral 
+        });
+        return;
+      }
+
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
