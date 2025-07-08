@@ -11,6 +11,8 @@ import { Client as PgClient } from 'pg';
 import { stringify } from 'csv-stringify';
 import { writeFileSync } from 'fs';
 
+const MIKE_USER_ID = '356482549549236225';
+
 const db = new PgClient({
   connectionString: process.env.DATABASE_URL,
 });
@@ -158,7 +160,10 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'brewbot') {
     if (interaction.options.getSubcommand() === 'report') {
       const member = interaction.member;
-      if (!member || !member.roles.cache.has(process.env.MODS_ROLE_ID!)) {
+      const isMod = member?.roles.cache.has(process.env.MODS_ROLE_ID!);
+      const isMike = interaction.user.id === MIKE_USER_ID;
+      
+      if (!isMod && !isMike) {
         await interaction.reply({ 
           content: 'You do not have permission to generate reports.', 
           flags: MessageFlags.Ephemeral 
