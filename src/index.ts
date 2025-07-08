@@ -7,17 +7,23 @@ import {
   AttachmentBuilder,
   MessageFlags,
 } from 'discord.js';
-import { Client as PgClient } from 'pg';
+import { Pool } from 'pg';
 import { stringify } from 'csv-stringify';
 import { writeFileSync } from 'fs';
 
 const MIKE_USER_ID = '356482549549236225';
 
-const db = new PgClient({
+const db = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 0,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
-
-db.connect();
 
 db.query(`
   CREATE TABLE IF NOT EXISTS coffee_chats (
@@ -27,7 +33,7 @@ db.query(`
     participant_2_user_id TEXT NOT NULL,
     discord_message_id TEXT NOT NULL
   )
-`);
+`).catch(console.error);
 
 db.query(`
   CREATE TABLE IF NOT EXISTS discord_users (
@@ -35,7 +41,7 @@ db.query(`
     display_name TEXT NOT NULL,
     username TEXT NOT NULL
   )
-`);
+`).catch(console.error);
 
 const client = new Client({
   intents: [
