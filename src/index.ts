@@ -2,10 +2,12 @@ import {
   Client,
   GatewayIntentBits,
   Message,
+  User,
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   AttachmentBuilder,
   MessageFlags,
+  GuildMemberRoleManager,
 } from 'discord.js';
 import { Pool } from 'pg';
 import { stringify } from 'csv-stringify';
@@ -21,11 +23,12 @@ const db = new Pool({
   keepAlive: true,
   keepAliveInitialDelayMillis: 0,
   ssl: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false,
+  },
 });
 
-db.query(`
+db.query(
+  `
   CREATE TABLE IF NOT EXISTS coffee_chats (
     id SERIAL PRIMARY KEY,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -33,15 +36,18 @@ db.query(`
     participant_2_user_id TEXT NOT NULL,
     discord_message_id TEXT NOT NULL
   )
-`).catch(console.error);
+`
+).catch(console.error);
 
-db.query(`
+db.query(
+  `
   CREATE TABLE IF NOT EXISTS discord_users (
     user_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     username TEXT NOT NULL
   )
-`).catch(console.error);
+`
+).catch(console.error);
 
 const client = new Client({
   intents: [
@@ -125,25 +131,29 @@ const getCoffeeChatStats = async () => {
   return result.rows;
 };
 
-function parseMessage(message: Message): { mentionedUserId: string } | null {
-  const content = message.content.toLowerCase();
-
-  if (!content.includes('chat')) {
-    return null;
-  }
-
+function parseMessage(message: Message): { mentionedUser: User } | null {
   const mentions = message.mentions.users;
-  if (mentions.size !== 1) {
+  if (mentions.size !== 2) {
     return null;
   }
 
-  const mentionedUserId = mentions.first()!.id;
+  const mentionedUsers = Array.from(mentions.values());
+  const BREWBOT_USER_ID = '1386052929072398366';
 
-  if (mentionedUserId === message.author.id) {
+  const wasBrewbotMentioned = mentionedUsers.some(
+    (user) => user.id === BREWBOT_USER_ID
+  );
+  if (!wasBrewbotMentioned) {
     return null;
   }
 
-  return { mentionedUserId };
+  const otherUser = mentionedUsers.find((user) => user.id !== BREWBOT_USER_ID);
+
+  if (!otherUser || otherUser?.id === message.author.id) {
+    return null;
+  }
+
+  return { mentionedUser: otherUser };
 }
 
 client.on('ready', async () => {
@@ -166,13 +176,15 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'brewbot') {
     if (interaction.options.getSubcommand() === 'report') {
       const member = interaction.member;
-      const isMod = member?.roles.cache.has(process.env.MODS_ROLE_ID!);
+      const isMod = (member?.roles as GuildMemberRoleManager).cache.has(
+        process.env.MODS_ROLE_ID!
+      );
       const isMike = interaction.user.id === MIKE_USER_ID;
-      
+
       if (!isMod && !isMike) {
-        await interaction.reply({ 
-          content: 'You do not have permission to generate reports.', 
-          flags: MessageFlags.Ephemeral 
+        await interaction.reply({
+          content: 'You do not have permission to generate reports.',
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -236,7 +248,7 @@ client.on('messageCreate', async (message: Message) => {
   if (!parsed) return;
 
   try {
-    const mentionedUser = message.mentions.users.first()!;
+    const mentionedUser = parsed.mentionedUser;
 
     await upsertDiscordUser(
       message.author.id,
@@ -252,7 +264,7 @@ client.on('messageCreate', async (message: Message) => {
 
     const inserted = await insertCoffeeChat(
       message.author.id,
-      parsed.mentionedUserId,
+      parsed.mentionedUser.id,
       message.id
     );
 
