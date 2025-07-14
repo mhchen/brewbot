@@ -14,6 +14,7 @@ import { stringify } from 'csv-stringify';
 import { writeFileSync } from 'fs';
 
 const MIKE_USER_ID = '356482549549236225';
+const BREWBOT_USER_ID = '1386052929072398366';
 
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -133,23 +134,26 @@ const getCoffeeChatStats = async () => {
 
 function parseMessage(message: Message): { mentionedUser: User } | null {
   const mentions = message.mentions.users;
-  if (mentions.size !== 2) {
+  // Get unique user IDs to deduplicate mentions of the same user
+  const uniqueUserIds = Array.from(new Set(mentions.keys()));
+  
+  if (uniqueUserIds.length !== 2) {
     return null;
   }
 
-  const mentionedUsers = Array.from(mentions.values());
-  const BREWBOT_USER_ID = '1386052929072398366';
 
-  const wasBrewbotMentioned = mentionedUsers.some(
-    (user) => user.id === BREWBOT_USER_ID
-  );
+  const wasBrewbotMentioned = uniqueUserIds.includes(BREWBOT_USER_ID);
   if (!wasBrewbotMentioned) {
     return null;
   }
 
-  const otherUser = mentionedUsers.find((user) => user.id !== BREWBOT_USER_ID);
+  const otherUserId = uniqueUserIds.find((userId) => userId !== BREWBOT_USER_ID);
+  if (!otherUserId || otherUserId === message.author.id) {
+    return null;
+  }
 
-  if (!otherUser || otherUser?.id === message.author.id) {
+  const otherUser = mentions.get(otherUserId);
+  if (!otherUser) {
     return null;
   }
 
@@ -244,8 +248,15 @@ client.on('messageCreate', async (message: Message) => {
 
   if (message.channelId !== process.env.COFFEE_CHAT_CHANNEL_ID) return;
 
+  const wasBrewbotMentioned = message.mentions.users.has(BREWBOT_USER_ID);
+
   const parsed = parseMessage(message);
-  if (!parsed) return;
+  if (!parsed) {
+    if (wasBrewbotMentioned) {
+      await message.react('❌');
+    }
+    return;
+  }
 
   try {
     const mentionedUser = parsed.mentionedUser;
