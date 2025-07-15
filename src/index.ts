@@ -66,6 +66,23 @@ const commands = [
       subcommand
         .setName('report')
         .setDescription('Generate a CSV report of coffee chat statistics')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('add')
+        .setDescription('Add a coffee chat between two users')
+        .addUserOption((option) =>
+          option
+            .setName('user1')
+            .setDescription('First user for the coffee chat')
+            .setRequired(true)
+        )
+        .addUserOption((option) =>
+          option
+            .setName('user2')
+            .setDescription('Second user for the coffee chat')
+            .setRequired(true)
+        )
     ),
 ];
 
@@ -111,6 +128,26 @@ const insertCoffeeChat = async (
   return true;
 };
 
+const createCoffeeChat = async (
+  user1: User,
+  user2: User,
+  messageId: string
+) => {
+  await upsertDiscordUser(
+    user1.id,
+    user1.displayName || user1.username,
+    user1.username
+  );
+
+  await upsertDiscordUser(
+    user2.id,
+    user2.displayName || user2.username,
+    user2.username
+  );
+
+  return await insertCoffeeChat(user1.id, user2.id, messageId);
+};
+
 const getCoffeeChatStats = async () => {
   const query = `
     SELECT 
@@ -136,18 +173,19 @@ function parseMessage(message: Message): { mentionedUser: User } | null {
   const mentions = message.mentions.users;
   // Get unique user IDs to deduplicate mentions of the same user
   const uniqueUserIds = Array.from(new Set(mentions.keys()));
-  
+
   if (uniqueUserIds.length !== 2) {
     return null;
   }
-
 
   const wasBrewbotMentioned = uniqueUserIds.includes(BREWBOT_USER_ID);
   if (!wasBrewbotMentioned) {
     return null;
   }
 
-  const otherUserId = uniqueUserIds.find((userId) => userId !== BREWBOT_USER_ID);
+  const otherUserId = uniqueUserIds.find(
+    (userId) => userId !== BREWBOT_USER_ID
+  );
   if (!otherUserId || otherUserId === message.author.id) {
     return null;
   }
@@ -178,21 +216,21 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'brewbot') {
+    const member = interaction.member;
+    const isMod = (member?.roles as GuildMemberRoleManager).cache.has(
+      process.env.MODS_ROLE_ID!
+    );
+    const isMike = interaction.user.id === MIKE_USER_ID;
+
+    if (!isMod && !isMike) {
+      await interaction.reply({
+        content: 'You do not have permission to use BrewBot commands.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     if (interaction.options.getSubcommand() === 'report') {
-      const member = interaction.member;
-      const isMod = (member?.roles as GuildMemberRoleManager).cache.has(
-        process.env.MODS_ROLE_ID!
-      );
-      const isMike = interaction.user.id === MIKE_USER_ID;
-
-      if (!isMod && !isMike) {
-        await interaction.reply({
-          content: 'You do not have permission to generate reports.',
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
@@ -239,6 +277,55 @@ client.on('interactionCreate', async (interaction) => {
           'Error generating report. Please try again.'
         );
       }
+    } else if (interaction.options.getSubcommand() === 'add') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      try {
+        const user1 = interaction.options.getUser('user1');
+        const user2 = interaction.options.getUser('user2');
+
+        if (!user1 || !user2) {
+          await interaction.editReply(
+            '❌ Must specify both users to create a coffee chat.'
+          );
+          return;
+        }
+
+        if (user1.id === user2.id) {
+          await interaction.editReply(
+            '❌ Must specify two different users to create a coffee chat.'
+          );
+          return;
+        }
+
+        if (user1.bot || user2.bot) {
+          await interaction.editReply(
+            '❌ Cannot create coffee chats with bot users.'
+          );
+          return;
+        }
+
+        const created = await createCoffeeChat(user1, user2, interaction.id);
+
+        if (created) {
+          await interaction.editReply(
+            `☕ Coffee chat created between ${
+              user1.displayName || user1.username
+            } and ${user2.displayName || user2.username}!`
+          );
+        } else {
+          await interaction.editReply(
+            `Coffee chat already exists between ${
+              user1.displayName || user1.username
+            } and ${user2.displayName || user2.username}.`
+          );
+        }
+      } catch (error) {
+        console.error('Error creating coffee chat:', error);
+        await interaction.editReply(
+          'Error creating coffee chat. Please try again.'
+        );
+      }
     }
   }
 });
@@ -261,21 +348,9 @@ client.on('messageCreate', async (message: Message) => {
   try {
     const mentionedUser = parsed.mentionedUser;
 
-    await upsertDiscordUser(
-      message.author.id,
-      message.author.displayName || message.author.username,
-      message.author.username
-    );
-
-    await upsertDiscordUser(
-      mentionedUser.id,
-      mentionedUser.displayName || mentionedUser.username,
-      mentionedUser.username
-    );
-
-    const inserted = await insertCoffeeChat(
-      message.author.id,
-      parsed.mentionedUser.id,
+    const inserted = await createCoffeeChat(
+      message.author,
+      mentionedUser,
       message.id
     );
 
